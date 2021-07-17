@@ -24,7 +24,6 @@ object Replica {
 }
 
 class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
-  import Replica._
   import Replicator._
   import Persistence._
   import context.dispatcher
@@ -39,21 +38,40 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
   // the current set of replicators
   var replicators = Set.empty[ActorRef]
 
+  // Replicate must first send a Join message to arbiter
+  arbiter ! Join
 
-  def receive = {
+  def receive: Receive = {
     case JoinedPrimary   => context.become(leader)
     case JoinedSecondary => context.become(replica)
   }
 
-  /* TODO Behavior for  the leader role. */
+  /* TODO Behavior for the leader role. */
   val leader: Receive = {
-    case _ =>
+    case Replica.Insert(key, value, id) => handleInsert(key, value, id)
+    case Replica.Remove(key, id) => handleRemove(key, id)
+    case Replica.Get(key, id) => handleGet(key, id)
   }
 
   /* TODO Behavior for the replica role. */
   val replica: Receive = {
     case _ =>
   }
+
+  private def handleInsert(key: String, value: String, id: Long): Unit = {
+    kv += key -> value
+    sender ! Replica.OperationAck(id)
+  }
+
+  private def handleRemove(key: String, id: Long): Unit = {
+    kv -= key
+    sender ! Replica.OperationAck(id)
+  }
+
+  private def handleGet(key: String, id: Long): Unit = {
+    sender ! Replica.GetResult(key, kv.get(key), id)
+  }
+d
 
 }
 
