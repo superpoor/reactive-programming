@@ -24,19 +24,15 @@ object Replica {
 }
 
 class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
-  import Replicator._
-  import Persistence._
-  import context.dispatcher
+//  import context.dispatcher
 
-  /*
-   * The contents of this actor is just a suggestion, you can implement it in any way you like.
-   */
-  
   var kv = Map.empty[String, String]
   // a map from secondary replicas to replicators
   var secondaries = Map.empty[ActorRef, ActorRef]
   // the current set of replicators
   var replicators = Set.empty[ActorRef]
+  // the expected seq counter of snapshot message
+  var expectedSeqCounter = 0L
 
   // Replicate must first send a Join message to arbiter
   arbiter ! Join
@@ -55,7 +51,8 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
 
   /* TODO Behavior for the replica role. */
   val replica: Receive = {
-    case _ =>
+    case Replicator.Snapshot(key, valueOpt, seq) => handleSnapshot(key, valueOpt, seq)
+    case Replica.Get(key, id) => handleGet(key, id)
   }
 
   private def handleInsert(key: String, value: String, id: Long): Unit = {
@@ -71,7 +68,23 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
   private def handleGet(key: String, id: Long): Unit = {
     sender ! Replica.GetResult(key, kv.get(key), id)
   }
-d
+
+  private def handleSnapshot(key: String, valueOpt: Option[String], seq: Long): Unit = {
+    if (seq > expectedSeqCounter) {
+      // Totally ignore
+      ()
+    } else if (seq < expectedSeqCounter) {
+      // Only ack
+      sender ! Replicator.SnapshotAck(key, seq)
+    } else {
+      // Update and ack
+      valueOpt.fold { kv -= key } {
+        value => kv += key -> value
+      }
+      expectedSeqCounter += 1
+      sender ! Replicator.SnapshotAck(key, seq)
+    }
+  }
 
 }
 
