@@ -58,8 +58,8 @@ class Replicator(val replica: ActorRef) extends Actor {
   }
 
   private def handleSnapshotAck(key: String, seq: Long): Unit = {
-    acks.get(seq).foreach { case (sender, replicateMsg) =>
-      sender ! Replicator.Replicated(key, replicateMsg.id)
+    acks.get(seq).foreach { case (requester, replicateMsg) =>
+      requester ! Replicator.Replicated(key, replicateMsg.id)
       acks -= seq
     }
   }

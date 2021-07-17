@@ -30,7 +30,8 @@ object Replica {
     persistedAck: (Persistence.Persist, Boolean),
     replicatedAcks: Set[ActorRef]
   ) {
-    lazy val isDone: Boolean = persistedAck._2 && replicatedAcks.isEmpty
+    def isDone(replicators: Set[ActorRef]): Boolean =
+      persistedAck._2 && replicatedAcks.forall(!replicators.contains(_))
   }
 
   def props(arbiter: ActorRef, persistenceProps: Props): Props = Props(new Replica(arbiter, persistenceProps))
@@ -92,10 +93,31 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
 
   private def handleReplicas(replicas: Set[ActorRef]): Unit = {
     replicas.filter(_ != self).foreach { replica =>
+      // new replica
       if (!secondaries.contains(replica)) {
         val replicator = context.actorOf(Replicator.props(replica))
         replicators += replicator
         secondaries += replica -> replicator
+        kv.foreach { case (key, value) =>
+          replicator ! Replicator.Replicate(key, Some(value), -1)
+        }
+      }
+    }
+    secondaries.foreach { case (replica, replicator) =>
+      // removed replica
+      if (!replicas.contains(replica)) {
+        replicator ! PoisonPill
+        replicators -= replicator
+        secondaries -= replica
+
+        // Check to resolve ack
+        waitingAcks.foreach { case (id, waitingAck) =>
+          if (waitingAck.isDone(replicators)) {
+            waitingAck.requester ! Replica.OperationAck(id)
+            waitingAcks -= id
+          }
+        }
+
       }
     }
   }
@@ -133,8 +155,10 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
 
   private def handleOperationAckTimeout(id: Long): Unit = {
     waitingAcks.get(id).foreach { waitingAck =>
-      if (!waitingAck.isDone) {
+      if (!waitingAck.isDone(replicators)) {
         waitingAck.requester ! Replica.OperationFailed(id)
+      } else {
+        waitingAck.requester ! Replica.OperationAck(id)
       }
       waitingAcks -= id
     }
@@ -151,7 +175,7 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
   private def handlePersisted(key: String, id: Long, isPrimary: Boolean): Unit = {
     waitingAcks.get(id).foreach { waitingAck =>
       val newAwaitingAck = waitingAck.copy(persistedAck = waitingAck.persistedAck._1 -> true)
-      if (newAwaitingAck.isDone) {
+      if (newAwaitingAck.isDone(replicators)) {
         waitingAcks -= id
         if (isPrimary) {
           waitingAck.requester ! Replica.OperationAck(id)
@@ -168,7 +192,7 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
   private def handleReplicated(key: String, id: Long): Unit = {
     waitingAcks.get(id).foreach { waitingAck =>
       val newWaitingAck = waitingAck.copy(replicatedAcks = waitingAck.replicatedAcks - sender)
-      if (newWaitingAck.isDone) {
+      if (newWaitingAck.isDone(replicators)) {
         waitingAcks -= id
         waitingAck.requester ! Replica.OperationAck(id)
       } else {
